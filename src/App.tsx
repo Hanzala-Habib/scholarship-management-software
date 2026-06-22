@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
@@ -36,6 +36,8 @@ type NewUniversity = Omit<University, 'id' | 'professors'>
 type NewProfessor = Omit<Professor, 'id'>
 
 const storageKey = 'scholarship-command-center-v2'
+const savedAtKey = 'scholarship-command-center-saved-at'
+const passwordStorageKey = 'scholarship-command-center-password'
 const allCountriesValue = 'All countries'
 
 const emptyUniversity: NewUniversity = {
@@ -128,6 +130,37 @@ function sortByDeadline(items: University[]) {
   })
 }
 
+function formatSavedAt(value: string) {
+  if (!value) return 'Not saved yet'
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
+
+async function requestCloudData(password: string, universities?: University[]) {
+  const response = await fetch('/api/data', {
+    method: universities ? 'POST' : 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-App-Password': password,
+    },
+    body: universities ? JSON.stringify({ universities }) : undefined,
+  })
+
+  const payload = (await response.json()) as {
+    universities?: University[]
+    updatedAt?: string
+    error?: string
+  }
+
+  if (!response.ok) {
+    throw new Error(payload.error || 'Cloud storage request failed.')
+  }
+
+  return payload
+}
+
 function App() {
   const [universities, setUniversities] = useState<University[]>(() => {
     const saved = localStorage.getItem(storageKey)
@@ -152,9 +185,101 @@ function App() {
   const [professorForm, setProfessorForm] = useState<NewProfessor>(emptyProfessor)
   const [query, setQuery] = useState('')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [appPassword, setAppPassword] = useState(() => localStorage.getItem(passwordStorageKey) ?? '')
+  const [passwordInput, setPasswordInput] = useState('')
+  const [cloudStatus, setCloudStatus] = useState('Cloud storage locked')
+  const [cloudUpdatedAt, setCloudUpdatedAt] = useState('')
+  const [isCloudReady, setIsCloudReady] = useState(false)
+  const [isConnectingCloud, setIsConnectingCloud] = useState(false)
+  const skipNextCloudSave = useRef(false)
+  const latestUniversities = useRef(universities)
 
   useEffect(() => {
+    latestUniversities.current = universities
+    const savedAt = new Date().toISOString()
     localStorage.setItem(storageKey, JSON.stringify(universities))
+    localStorage.setItem(savedAtKey, savedAt)
+  }, [universities])
+
+  useEffect(() => {
+    if (!appPassword) {
+      return
+    }
+
+    let isActive = true
+
+    async function loadCloudData() {
+      setIsConnectingCloud(true)
+      setCloudStatus('Connecting to cloud storage...')
+
+      try {
+        const payload = await requestCloudData(appPassword)
+        if (!isActive) return
+
+        const cloudUniversities = Array.isArray(payload.universities)
+          ? payload.universities.map(normalizeUniversity)
+          : []
+        let nextCloudUpdatedAt = payload.updatedAt ?? ''
+
+        if (cloudUniversities.length > 0) {
+          skipNextCloudSave.current = true
+          setUniversities(cloudUniversities)
+          setSelectedCountry(cloudUniversities[0]?.country ?? allCountriesValue)
+          setSelectedUniversityId(cloudUniversities[0]?.id ?? '')
+        } else if (latestUniversities.current.length > 0) {
+          const savedPayload = await requestCloudData(appPassword, latestUniversities.current)
+          if (!isActive) return
+          nextCloudUpdatedAt = savedPayload.updatedAt ?? nextCloudUpdatedAt
+        }
+
+        setCloudUpdatedAt(nextCloudUpdatedAt)
+        setIsCloudReady(true)
+        setCloudStatus('Cloud storage connected')
+      } catch (error) {
+        if (!isActive) return
+        setIsCloudReady(false)
+        setCloudStatus(error instanceof Error ? error.message : 'Cloud storage failed')
+      } finally {
+        if (isActive) setIsConnectingCloud(false)
+      }
+    }
+
+    void loadCloudData()
+
+    return () => {
+      isActive = false
+    }
+  }, [appPassword])
+
+  useEffect(() => {
+    if (!isCloudReady || !appPassword) return
+
+    if (skipNextCloudSave.current) {
+      skipNextCloudSave.current = false
+      return
+    }
+
+    const saveTimer = window.setTimeout(() => {
+      setCloudStatus('Saving to cloud...')
+      requestCloudData(appPassword, universities)
+        .then((payload) => {
+          setCloudUpdatedAt(payload.updatedAt ?? new Date().toISOString())
+          setCloudStatus('Cloud storage connected')
+        })
+        .catch((error) => {
+          setCloudStatus(error instanceof Error ? error.message : 'Cloud save failed')
+        })
+    }, 600)
+
+    return () => window.clearTimeout(saveTimer)
+  }, [appPassword, isCloudReady, universities])
+
+  const lastSavedAt = useMemo(() => {
+    if (universities.length === 0) {
+      return localStorage.getItem(savedAtKey) ?? ''
+    }
+
+    return localStorage.getItem(savedAtKey) ?? new Date().toISOString()
   }, [universities])
 
   const activeCountry =
@@ -375,6 +500,24 @@ function App() {
     event.target.value = ''
   }
 
+  function connectCloud(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const nextPassword = passwordInput.trim()
+    if (!nextPassword) return
+
+    localStorage.setItem(passwordStorageKey, nextPassword)
+    setAppPassword(nextPassword)
+    setPasswordInput('')
+  }
+
+  function disconnectCloud() {
+    localStorage.removeItem(passwordStorageKey)
+    setAppPassword('')
+    setIsCloudReady(false)
+    setCloudUpdatedAt('')
+    setCloudStatus('Cloud storage locked')
+  }
+
   return (
     <main className={isSidebarCollapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}>
       <aside className="sidebar">
@@ -550,6 +693,11 @@ function App() {
           <div>
             <p className="eyebrow">Selected country</p>
             <h2>{activeCountry}</h2>
+            <p className="save-status">Saved on this browser: {formatSavedAt(lastSavedAt)}</p>
+            <p className={isCloudReady ? 'cloud-status connected' : 'cloud-status'}>
+              {cloudStatus}
+              {cloudUpdatedAt ? `: ${formatSavedAt(cloudUpdatedAt)}` : ''}
+            </p>
           </div>
           <div className="topbar-actions">
             <label className="file-action">
@@ -561,6 +709,42 @@ function App() {
             </button>
           </div>
         </header>
+
+        {!appPassword ? (
+          <section className="panel cloud-panel">
+            <div>
+              <h2>Connect cloud storage</h2>
+              <p>
+                Enter your private app password to load and save your tracker in Neon Postgres.
+              </p>
+            </div>
+            <form className="cloud-form" onSubmit={connectCloud}>
+              <input
+                aria-label="App password"
+                placeholder="App password"
+                type="password"
+                value={passwordInput}
+                onChange={(event) => setPasswordInput(event.target.value)}
+              />
+              <button className="primary-action" type="submit">
+                Connect
+              </button>
+            </form>
+          </section>
+        ) : (
+          <section className="cloud-strip">
+            <span>
+              {isCloudReady
+                ? 'Cloud sync is active. Changes save automatically.'
+                : isConnectingCloud
+                  ? 'Connecting to cloud storage...'
+                  : cloudStatus}
+            </span>
+            <button type="button" onClick={disconnectCloud}>
+              Disconnect
+            </button>
+          </section>
+        )}
 
         <section className="stats-grid">
           <StatCard label="Universities" value={stats.universities} />

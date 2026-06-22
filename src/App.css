@@ -119,10 +119,69 @@
   font-size: 30px;
 }
 
+.save-status {
+  margin: 6px 0 0;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cloud-status {
+  margin: 4px 0 0;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cloud-status.connected {
+  color: #0f766e;
+}
+
 .topbar-actions {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.cloud-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+  gap: 16px;
+  align-items: center;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
+.cloud-panel h2 {
+  margin: 0 0 6px;
+  color: #134e4a;
+  font-size: 17px;
+}
+
+.cloud-panel p,
+.cloud-strip span {
+  margin: 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.cloud-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+}
+
+.cloud-strip {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: #f0fdfa;
 }
 
 .panel,
@@ -667,6 +726,8 @@ button:hover,
 
   .main-grid,
   .filters,
+  .cloud-panel,
+  .cloud-form,
   .professor-form,
   .sidebar-collapsed .professor-form,
   .professor-contact-grid,
@@ -685,6 +746,11 @@ button:hover,
 
   .topbar-actions {
     flex-wrap: wrap;
+  }
+
+  .cloud-strip {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .title-input {
