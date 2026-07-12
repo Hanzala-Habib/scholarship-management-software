@@ -34,6 +34,11 @@ type University = {
 
 type NewUniversity = Omit<University, 'id' | 'professors'>
 type NewProfessor = Omit<Professor, 'id'>
+type FollowUpItem = {
+  university: University
+  professor: Professor
+  days: number
+}
 
 const storageKey = 'scholarship-command-center-v2'
 const savedAtKey = 'scholarship-command-center-saved-at'
@@ -191,8 +196,12 @@ function App() {
   const [cloudUpdatedAt, setCloudUpdatedAt] = useState('')
   const [isCloudReady, setIsCloudReady] = useState(false)
   const [isConnectingCloud, setIsConnectingCloud] = useState(false)
+  const [notificationPermission, setNotificationPermission] = useState(() =>
+    'Notification' in window ? Notification.permission : 'unsupported',
+  )
   const skipNextCloudSave = useRef(false)
   const latestUniversities = useRef(universities)
+  const notifiedFollowUps = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     latestUniversities.current = universities
@@ -349,13 +358,48 @@ function App() {
   const selectedUniversity =
     filteredUniversities.find((item) => item.id === selectedUniversityId) ?? filteredUniversities[0]
 
+  const dueFollowUps = useMemo<FollowUpItem[]>(() => {
+    return universities
+      .flatMap((university) =>
+        university.professors.map((professor) => ({
+          university,
+          professor,
+          days: daysUntil(professor.followUpOn),
+        })),
+      )
+      .filter((item): item is FollowUpItem => {
+        return (
+          item.days !== null &&
+          item.days <= 0 &&
+          Boolean(item.professor.emailedOn) &&
+          !['responded', 'not-fit'].includes(item.professor.status)
+        )
+      })
+      .sort((a, b) => a.days - b.days)
+  }, [universities])
+
+  useEffect(() => {
+    if (notificationPermission !== 'granted' || dueFollowUps.length === 0) return
+
+    const newDueItems = dueFollowUps.filter((item) => !notifiedFollowUps.current.has(item.professor.id))
+    if (newDueItems.length === 0) return
+
+    newDueItems.forEach((item) => notifiedFollowUps.current.add(item.professor.id))
+
+    const firstItem = newDueItems[0]
+    const extraCount = newDueItems.length - 1
+    const title = extraCount > 0 ? `${newDueItems.length} professor follow-ups due` : 'Professor follow-up due'
+    const body =
+      extraCount > 0
+        ? `${firstItem.professor.name} at ${firstItem.university.name}, plus ${extraCount} more.`
+        : `${firstItem.professor.name} at ${firstItem.university.name} needs a follow-up.`
+
+    new Notification(title, { body })
+  }, [dueFollowUps, notificationPermission])
+
   const stats = useMemo(() => {
     const professors = filteredUniversities.flatMap((item) => item.professors)
     const contacted = professors.filter((item) => item.emailedOn).length
-    const followUps = professors.filter((item) => {
-      const days = daysUntil(item.followUpOn)
-      return item.followUpOn && item.status !== 'responded' && days !== null && days <= 7
-    }).length
     const applications = filteredUniversities.filter((item) =>
       ['applied', 'accepted'].includes(item.applicationStatus),
     ).length
@@ -364,10 +408,10 @@ function App() {
       universities: filteredUniversities.length,
       professors: professors.length,
       contacted,
-      followUps,
+      followUps: dueFollowUps.length,
       applications,
     }
-  }, [filteredUniversities])
+  }, [dueFollowUps.length, filteredUniversities])
 
   function addUniversity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -447,6 +491,38 @@ function App() {
       emailedOn: professor.emailedOn || todayValue(),
       followUpOn: professor.followUpOn || addDays(todayValue(), 7),
     })
+  }
+
+  function selectFollowUp(item: FollowUpItem) {
+    setSelectedCountry(item.university.country)
+    setSelectedScholarship('All')
+    setSelectedUniversityId(item.university.id)
+    window.setTimeout(() => {
+      document.getElementById('professors-section')?.scrollIntoView({ behavior: 'smooth' })
+    }, 80)
+  }
+
+  function markFollowUpSent(item: FollowUpItem) {
+    updateProfessor(item.university.id, item.professor.id, {
+      status: 'follow-up',
+      followUpOn: addDays(todayValue(), 7),
+    })
+  }
+
+  function markFollowUpResponded(item: FollowUpItem) {
+    updateProfessor(item.university.id, item.professor.id, {
+      status: 'responded',
+    })
+  }
+
+  async function enableNotifications() {
+    if (!('Notification' in window)) {
+      setNotificationPermission('unsupported')
+      return
+    }
+
+    const permission = await Notification.requestPermission()
+    setNotificationPermission(permission)
   }
 
   function deleteUniversity(id: string) {
@@ -754,6 +830,61 @@ function App() {
           <StatCard label="Applied / accepted" value={stats.applications} />
         </section>
 
+        <section className={dueFollowUps.length > 0 ? 'panel follow-up-panel urgent' : 'panel follow-up-panel'}>
+          <div className="follow-up-header">
+            <div>
+              <p className="eyebrow">Follow-up center</p>
+              <h2>{dueFollowUps.length > 0 ? `${dueFollowUps.length} follow-up due` : 'No follow-ups due'}</h2>
+              <p>
+                {dueFollowUps.length > 0
+                  ? 'These professors need your attention today.'
+                  : 'When a professor reaches the follow-up date, they will appear here.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={enableNotifications}
+              disabled={notificationPermission === 'granted' || notificationPermission === 'unsupported'}
+            >
+              {notificationPermission === 'granted'
+                ? 'Notifications enabled'
+                : notificationPermission === 'unsupported'
+                  ? 'Notifications unavailable'
+                  : 'Enable notifications'}
+            </button>
+          </div>
+
+          {dueFollowUps.length > 0 && (
+            <div className="follow-up-list">
+              {dueFollowUps.map((item) => (
+                <article className="follow-up-item" key={`${item.university.id}-${item.professor.id}`}>
+                  <div>
+                    <strong>{item.professor.name}</strong>
+                    <span>
+                      {item.university.name} - {item.university.country}
+                    </span>
+                    <small>
+                      Follow-up {item.days < 0 ? `${Math.abs(item.days)} days overdue` : 'due today'} - emailed{' '}
+                      {item.professor.emailedOn || 'date not set'}
+                    </small>
+                  </div>
+                  <div className="follow-up-actions">
+                    <button type="button" onClick={() => selectFollowUp(item)}>
+                      Open
+                    </button>
+                    <button type="button" onClick={() => markFollowUpSent(item)}>
+                      Followed up
+                    </button>
+                    <button type="button" onClick={() => markFollowUpResponded(item)}>
+                      Responded
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="filters">
           <input
             aria-label="Search"
@@ -936,7 +1067,7 @@ function App() {
                   </label>
                 </section>
 
-                <section className="panel">
+                <section className="panel" id="professors-section">
                   <div className="panel-title">
                     <h2>Professors</h2>
                     <span>{selectedUniversity.professors.length} saved</span>
